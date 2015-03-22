@@ -956,7 +956,7 @@ static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
       skip_nosplit = od_block_encode(enc, ctx, d, pli, bx, by, rdo ? dc :
        NULL);
       /*Include an estimated rate cost of coding not-splitting.*/
-      od_ec_encode_bool_q15(&enc->ec, 1, split_probs[l - 1]);
+      od_ec_encode_bool_q15(&enc->ec, 0, split_probs[l - 1]);
       rate_nosplit = od_ec_enc_tell_frac(&enc->ec)-tell;
       od_encode_checkpoint(enc, &buf2);
       od_encode_rollback(enc, &buf1);
@@ -1004,7 +1004,7 @@ static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
         for (j = 0; j < n; j++) split[n*i + j] = ctx->c[bo + i*w + j];
       }
       /*Include an estimated rate cost of coding splitting.*/
-      od_ec_encode_bool_q15(&enc->ec, 0, split_probs[l - 1]);
+      od_ec_encode_bool_q15(&enc->ec, 1, split_probs[l - 1]);
       /*HACK: Bias the rate against splitting by 16 eighth-bits.*/
       rate_split = 16+od_ec_enc_tell_frac(&enc->ec)-tell;
       dist_split = od_compute_dist(enc, orig, split, n);
