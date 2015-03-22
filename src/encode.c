@@ -894,6 +894,8 @@ static void od_split_probs_for_rdo(od_adapt_ctx *adapt, int min_ctx_size,
   for (i = 0; i < 3; ++i) {
     split_probs[i] = numerators[i]/denominators[i];
   }
+  /*Hack to force probabilities to 0.5*/
+  split_probs[0] = split_probs[1] = split_probs[2] = 16384;
 }
 
 #if !defined(OD_DUMP_COEFFS)
