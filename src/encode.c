@@ -836,9 +836,69 @@ static double od_compute_dist(daala_enc_ctx *enc, od_coeff *x, od_coeff *y,
   return sum;
 }
 
+/*Given a block size CDF, returns the probability of splitting
+   each subblock, scaled to 32768.*/
+static ogg_uint16_t od_average_split(ogg_uint16_t bsize_cdf[16]) {
+  ogg_uint32_t prob_split = 0;
+  int i;
+  /*It's ok to skip i == 0 because num_ones would be zero.*/
+  for (i = 1; i < 16; ++i) {
+    int num_ones = (i & 1) + (i >> 1 & 1) + (i >> 2 & 1) + (i >> 3 & 1);
+    prob_split += num_ones*(bsize_cdf[i] - bsize_cdf[i - 1]);
+  }
+  /*8192 is 32768 (the Q15 scale) divided by 4 (the number of sub-blocks).*/
+  return (8192*prob_split)/bsize_cdf[15];
+}
+
+/*Given this adaptation context, estimate the average cost of coding splits.
+   |split_probs| is a table of Q15 probabilities
+  [0] Probability of coding 8->4 split
+  [1] Probability of coding 16->8 split
+  [2] Probability of coding 32->16 split*/
+static void od_split_probs_for_rdo(od_adapt_ctx *adapt, int min_ctx_size,
+ ogg_uint16_t split_probs[3]) {
+  int i;
+  ogg_uint16_t *bsize_range_cdf = adapt->bsize_range_cdf[min_ctx_size];
+  /*sb_prob* are probabilities scaled to bsize_range_cdf[6].*/
+  ogg_uint16_t sb_prob_16_to_8 = bsize_range_cdf[4] - bsize_range_cdf[3];
+  ogg_uint16_t sb_prob_all8 = bsize_range_cdf[3] - bsize_range_cdf[2];
+  ogg_uint16_t sb_prob_16_to_4 = bsize_range_cdf[2] - bsize_range_cdf[1];
+  ogg_uint16_t sb_prob_8_to_4 = bsize_range_cdf[1] - bsize_range_cdf[0];
+  ogg_uint16_t sb_prob_all4 = bsize_range_cdf[0];
+  ogg_uint16_t sb_prob_all8_or_less = sb_prob_all8 + sb_prob_8_to_4
+   + sb_prob_all4;
+  /*prob* are Q15.*/
+  ogg_uint16_t prob_16_split_min_8 =
+   od_average_split(adapt->bsize16_cdf[OD_BLOCK_8X8]);
+  ogg_uint16_t prob_16_split_min_4 =
+   od_average_split(adapt->bsize16_cdf[OD_BLOCK_4X4]);
+  ogg_uint16_t prob_8_split_min_4 = od_average_split(adapt->bsize8_cdf);
+  /*chance_8_* are the probability of reaching an 8x8 block and knowing it will
+     split, knowing it won't split, or needing to check.
+    Values are scaled to bsize_range_cdf[6]*Q15*/
+  ogg_int64_t chance_8_unsure = (sb_prob_16_to_4*prob_16_split_min_4 + sb_prob_8_to_4*32768);
+  ogg_int64_t chance_8_definitely = sb_prob_all4*32768;
+  ogg_int64_t chance_8_definitely_not = sb_prob_16_to_8*prob_16_split_min_8 + sb_prob_all8*32768;
+  ogg_int64_t numerators[3], denominators[3];
+  /*All entries up to and including 5 correspond to split superblocks, but 6
+     does not */
+  numerators[2] = bsize_range_cdf[5]*32768;
+  denominators[2] = bsize_range_cdf[6];
+  numerators[1] = sb_prob_16_to_8*prob_16_split_min_8
+   + sb_prob_16_to_4*prob_16_split_min_4 + sb_prob_all8_or_less*32768;
+  denominators[1] = bsize_range_cdf[5];
+  numerators[0] = chance_8_unsure*prob_8_split_min_4 
+   + chance_8_definitely*32768;
+  denominators[0] = chance_8_unsure + chance_8_definitely 
+   + chance_8_definitely_not;
+  for (i = 0; i < 3; ++i) {
+    split_probs[i] = numerators[i]/denominators[i];
+  }
+}
+
 #if !defined(OD_DUMP_COEFFS)
 static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
- int pli, int bx, int by, int l, int xdec, int ydec, int rdo, od_coeff **dc,
+ int pli, int bx, int by, int l, int xdec, int ydec, int rdo, ogg_uint16_t split_probs[3], od_coeff **dc,
  od_coeff **dc_rate) {
   int od;
   int d;
@@ -895,6 +955,8 @@ static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
       od_encode_checkpoint(enc, &buf1);
       skip_nosplit = od_block_encode(enc, ctx, d, pli, bx, by, rdo ? dc :
        NULL);
+      /*Include an estimated rate cost of coding not-splitting.*/
+      od_ec_encode_bool_q15(&enc->ec, 1, split_probs[l - 1]);
       rate_nosplit = od_ec_enc_tell_frac(&enc->ec)-tell;
       od_encode_checkpoint(enc, &buf2);
       od_encode_rollback(enc, &buf1);
@@ -923,13 +985,13 @@ static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
     by <<= 1;
     skip_split = 1;
     skip_split &= od_encode_recursive(enc, ctx, pli, bx + 0, by + 0, l, xdec,
-     ydec, rdo, dc, dc_rate);
+     ydec, rdo, split_probs, dc, dc_rate);
     skip_split &= od_encode_recursive(enc, ctx, pli, bx + 1, by + 0, l, xdec,
-     ydec, rdo, dc, dc_rate);
+     ydec, rdo, split_probs, dc, dc_rate);
     skip_split &= od_encode_recursive(enc, ctx, pli, bx + 0, by + 1, l, xdec,
-     ydec, rdo, dc, dc_rate);
+     ydec, rdo, split_probs, dc, dc_rate);
     skip_split &= od_encode_recursive(enc, ctx, pli, bx + 1, by + 1, l, xdec,
-     ydec, rdo, dc, dc_rate);
+     ydec, rdo, split_probs, dc, dc_rate);
     od_apply_filter_vsplit(ctx->c + bo, w, 1, d, f);
     od_apply_filter_hsplit(ctx->c + bo, w, 1, d, f);
     if (rdo) {
@@ -941,7 +1003,9 @@ static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
       for (i = 0; i < n; i++) {
         for (j = 0; j < n; j++) split[n*i + j] = ctx->c[bo + i*w + j];
       }
-      rate_split = 16+od_ec_enc_tell_frac(&enc->ec)-tell;
+      /*Include an estimated rate cost of coding splitting.*/
+      od_ec_encode_bool_q15(&enc->ec, 0, split_probs[l - 1]);
+      rate_split = od_ec_enc_tell_frac(&enc->ec)-tell;
       dist_split = od_compute_dist(enc, orig, split, n);
       dist_nosplit = od_compute_dist(enc, orig, nosplit, n);
       lambda = .125*OD_PVQ_LAMBDA*enc->quantizer[pli]*enc->quantizer[pli];
@@ -1518,6 +1582,12 @@ static void od_encode_residual(daala_enc_ctx *enc, od_mb_enc_ctx *mbctx,
         od_coeff *dc;
         od_coeff *dc_rate;
         od_rollback_buffer buf;
+        ogg_uint16_t split_probs[3];
+        if (rdo_only) {
+          int min_ctx_size = od_min_ctx_size(
+           &state->bsize[sby*4*state->bstride + sbx*4], state->bstride);
+          od_split_probs_for_rdo(&state->adapt, min_ctx_size, split_probs);
+        }
         dc = dc0;
         dc_rate = dc_rate0;
         OD_ENC_ACCT_UPDATE(enc, OD_ACCT_CAT_PLANE, OD_ACCT_PLANE_LUMA + pli);
@@ -1562,8 +1632,14 @@ static void od_encode_residual(daala_enc_ctx *enc, od_mb_enc_ctx *mbctx,
           dc = dc_rate = NULL;
         }
         od_encode_recursive(enc, mbctx, pli, sbx, sby, 3, xdec, ydec, rdo_only,
+         split_probs,
          mbctx->is_keyframe ? &dc : NULL,
          mbctx->is_keyframe ? &dc_rate : NULL);
+        /*This encode call is only used to update the block splitting symbol
+           adaptation so that the next superblock can do more accurate rate
+           estimation during RDO.*/
+        if (rdo_only) od_block_size_encode(&enc->ec, &state->adapt,
+         &state->bsize[sby*4*state->bstride + sbx*4], state->bstride);
 #endif
       }
         OD_ENC_ACCT_UPDATE(enc, OD_ACCT_CAT_PLANE, OD_ACCT_PLANE_UNKNOWN);
