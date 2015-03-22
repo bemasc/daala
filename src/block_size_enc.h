@@ -116,6 +116,8 @@ void od_split_superblock(od_block_size_comp *bs,
  const unsigned char *psy_img, int stride,
  const unsigned char *pred, int pred_stride, int dec[4][4], int q);
 
+int od_min_ctx_size(const unsigned char *bsize, int stride);
+
 void od_block_size_encode(od_ec_enc *enc, od_adapt_ctx *adapt,
  const unsigned char *bsize, int stride);
 

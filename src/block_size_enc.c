@@ -454,6 +454,16 @@ void od_split_superblock(od_block_size_comp *bs,
 #endif
 }
 
+int od_min_ctx_size(const unsigned char *bsize, int stride) {
+  int i, min_ctx_size;
+  min_ctx_size = bsize[-1 - stride];
+  for (i = 0; i < 4; i++) {
+    min_ctx_size = OD_MINI(min_ctx_size, bsize[i*stride - 1]);
+    min_ctx_size = OD_MINI(min_ctx_size, bsize[-stride + i]);
+  }
+  return min_ctx_size;
+}
+
 void od_block_size_encode(od_ec_enc *enc, od_adapt_ctx *adapt,
  const unsigned char *bsize, int stride) {
   int i, j;
@@ -461,12 +471,7 @@ void od_block_size_encode(od_ec_enc *enc, od_adapt_ctx *adapt,
   int max_size;
   int bsize_range_id;
   int split16;
-  int min_ctx_size;
-  min_ctx_size = bsize[-1 - stride];
-  for (i = 0; i < 4; i++) {
-    min_ctx_size = OD_MINI(min_ctx_size, bsize[i*stride - 1]);
-    min_ctx_size = OD_MINI(min_ctx_size, bsize[-stride + i]);
-  }
+  int min_ctx_size = od_min_ctx_size(bsize, stride);
   min_size = max_size = bsize[0];
   for (i = 0; i < 4; i++) {
     for (j = 0; j < 4; j++) {
