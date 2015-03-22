@@ -894,8 +894,6 @@ static void od_split_probs_for_rdo(od_adapt_ctx *adapt, int min_ctx_size,
   for (i = 0; i < 3; ++i) {
     split_probs[i] = numerators[i]/denominators[i];
   }
-  /*Hack to force probabilities to 0.5*/
-  split_probs[0] = split_probs[1] = split_probs[2] = 16384;
 }
 
 #if !defined(OD_DUMP_COEFFS)
@@ -1007,7 +1005,8 @@ static int od_encode_recursive(daala_enc_ctx *enc, od_mb_enc_ctx *ctx,
       }
       /*Include an estimated rate cost of coding splitting.*/
       od_ec_encode_bool_q15(&enc->ec, 0, split_probs[l - 1]);
-      rate_split = od_ec_enc_tell_frac(&enc->ec)-tell;
+      /*HACK: Bias the rate against splitting by 16 eighth-bits.*/
+      rate_split = 16+od_ec_enc_tell_frac(&enc->ec)-tell;
       dist_split = od_compute_dist(enc, orig, split, n);
       dist_nosplit = od_compute_dist(enc, orig, nosplit, n);
       lambda = .125*OD_PVQ_LAMBDA*enc->quantizer[pli]*enc->quantizer[pli];
